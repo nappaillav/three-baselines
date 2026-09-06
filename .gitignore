@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# W&B
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+./MARL
+./MARL/StarCraftII
+*.zip
+*./wandb
+wandb
+MARL/
+/MAG/wandb
