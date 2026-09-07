@@ -6,11 +6,11 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=a100_3g.20gb:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=36G
+#SBATCH --mem=24G
 #SBATCH --time=11:59:00
-#SBATCH --array=0-8
-#SBATCH --output="/home/chidamv/scratch/logs/out/%x-%A_%a.out"
-#SBATCH --error="/home/chidamv/scratch/logs/log/%x-%A_%a.err"
+#SBATCH --array=0-7
+#SBATCH --output="/home/chidamv/scratch/logs/log2/out/%x-%A_%a.out"
+#SBATCH --error="/home/chidamv/scratch/logs/log2/log/%x-%A_%a.err"
 
 start=$(date +%s)
 
@@ -49,7 +49,7 @@ wandb offline
 ### Experiment configurations
 ### -------------------------
 MAPS=(
-    "27m_vs_30m"
+    # "27m_vs_30m"
     "3s5z_vs_3s6z"
     "MMM2"
     "3s_vs_4z"
