@@ -50,3 +50,22 @@ STEP A EXACTNESS: PASS
 ```
 Profiler after A (shipped config, 10 model epochs, EPOCHS 1): m_r phase 9.5 s -> 0.17 s (10 predictor
 updates at 17 ms); everything else unchanged. TOTAL 90.1 s -> 75.2 s.
+
+### Step B — MPC loop without host syncs (exact)
+Changes in `networks/dreamer/rnns.py`: `RSSMTransition.para_predict` (list-of-states API) replaced by
+`para_predict_flat(prev_actions, stoch, deter)` on flat `(n_trajs*B, n_agents, .)` tensors; `MPCPredict`
+rewritten — candidate trajectories expanded once, `traj_losses` kept on the device, `argmin` once per
+imagination step, first-step prediction gathered by index (no `.cpu().numpy()`, no per-step Python
+list/stack rebuild), returns only the state; `rollout_policy` drops the `minlosses`/`ranlosses`
+bookkeeping (only fed a commented print) and uses `masked_fill`. `masked_fill` also in
+`agent/optim/loss.py::actor_loss` and `agent/controllers/DreamerController.py::step`.
+
+Exactness (same model/actor/predictor, same batch, same torch seed, old module loaded from a saved copy):
+```
+steps=5  H=3 K=2: stoch/deter/logits/actions/av_actions/old_policy all torch.equal -> True
+steps=15 H=6 K=4: all torch.equal -> True
+STEP B EXACTNESS: PASS
+```
+Profiler after B on CPU: MPCPredict 3.65 -> 3.92 s/call, i.e. **no change on CPU** (within noise). This
+is expected: the removed costs are host<->device syncs and launch gaps, which only exist on a GPU. The
+GPU effect is measured by gate F2 (job script below).

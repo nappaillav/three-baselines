@@ -121,7 +121,7 @@ def actor_loss(imag_states, actions, av_actions, old_policy, advantage, actor, e
         imag_states = imag_states.transpose(1, 0).reshape(config.n_elites*(config.HORIZON-1), -1, imag_states.shape[-1])
     _, new_policy = actor(imag_states)
     if av_actions is not None:
-        new_policy[av_actions == 0] = -1e10
+        new_policy = new_policy.masked_fill(av_actions == 0, -1e10)
     actions = actions.argmax(-1, keepdim=True)
     rho = (F.log_softmax(new_policy, dim=-1).gather(2, actions) -
            F.log_softmax(old_policy, dim=-1).gather(2, actions)).exp()
