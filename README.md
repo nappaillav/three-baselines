@@ -53,6 +53,16 @@ hyperparameters above and the driver changes apply.
   from the workers); `OMP_NUM_THREADS=1` is set for the ray workers by the job scripts.
 - `SC2PATH` must be exported; the hardcoded per-user paths are gone and `train.py` fails loudly without it.
 - `ray.init` is bounded (`num_cpus=n_workers`, 512 MB object store) so it cannot exceed the job's memory.
+- **wandb hardened (all three `train.py`)**: `wandb.init` is passed a settings object that disables
+  wandb's *system-metrics monitor* (GPU/CPU/RAM sampler), and `wandb.log` is wrapped so a logging
+  failure prints one warning and training continues instead of aborting. Reason: on Narval's MIG
+  slices the GPU sampler of wandb 0.16's service process crashed after ~3.4 h
+  (`Fatal Python error: none_dealloc`), the trainer then died on the next `wandb.log` with
+  `BrokenPipeError`, and every MAG run stopped at 0.66–1.3M steps. Training metrics (`incre_win_rate`,
+  `total_step`, `aver_step_reward`, losses) are logged exactly as before; only wandb's "System" panel
+  is gone. The setting name is resolved at runtime, so this works with wandb 0.16 and current releases.
+- `mag_profile/stubs/` holds no-op `wandb` and `setproctitle` modules for venvs that lack them (e.g.
+  MARLenv); put the directory on `PYTHONPATH` as the Rorqual job script does.
 
 **Verification done on CPU** (`mag_profile/tests/`, `mag_profile/IMPLEMENTATION_REPORT.md`): the
 predictor labels/inputs match the old code to 2e-6 / exactly; the rewritten MPC loop reproduces the
@@ -113,7 +123,31 @@ sbatch cc_mag_narval.sh 3s_vs_4z /home/chidamv/projects/def-dpmeger/chidamv/thre
 2. **One 100k-step run per algorithm on `3s_vs_4z`** (`STEPS=100000 sbatch ...`) to confirm the win
    rate is still in the range of the published curves before launching the 2M-step sweeps.
 
+### Measured on Narval (A100 3g.20gb, 8 cores, 4 workers), projected to 2M steps
+From the colleague's runs of 2026-09-07 (last-quarter throughput; ±30%):
+
+| map | MAG | MABL |
+|---|---|---|
+| 3s_vs_4z | 5.7 h | 6.7 h |
+| 3s_vs_5z | 4.8 h | 7.1 h |
+| corridor | 6.0 h | 9.5 h |
+| 2c_vs_64zg | 6.0 h | 11.5 h |
+| 6h_vs_8z | 6.8 h | 11.3 h |
+| 3s5z_vs_3s6z | 8.2 h | 10.2 h |
+| MMM2 | 9.0 h | 11.9 h |
+| so_many_baneling | 9.2 h | 12.3 h |
+| 27m_vs_30m | crashes at start on a 20 GB slice (see Notes) | same |
+
+MAG fits `--time=11:59:00` on every map above. MABL is slower despite its cheaper learner because it
+is environment-bound (one StarCraft II process, one worker); on the five maps over ~10 h use a smaller
+`STEPS=` or give MABL parallel workers. Driver RSS was 1.6–3.6 GB in all runs and `--mem=36G` was ample.
+
 ### Notes
+- **If a run stops early with no error in the `.out` file**, look at the `.err` file: a wandb service
+  crash shows up there as `Fatal Python error` followed by `BrokenPipeError` in `wandb.log`. The
+  hardening above prevents this; runs started before it must be relaunched with the updated code.
+- **27m_vs_30m** (27 agents) needs ~13 GB for the world-model phase alone at `MODEL_BATCH_SIZE=120`;
+  run it with `MODEL_BATCH_SIZE=40, MODEL_EPOCHS=60` or on a full GPU.
 - Seeds: MAG and MAMBA draw a random seed per run (`train.py`); MABL fixes `RANDOM_SEED = 23` — edit
   it for multi-seed studies.
 - MABL is single-process; `--n_workers` is accepted but inert, so 4 cores are enough for it.
