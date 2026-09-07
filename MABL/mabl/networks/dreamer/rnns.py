@@ -179,7 +179,7 @@ def rollout_policy(transition_model, av_action, steps, policy, prev_agent_state,
         action, pi = policy(agent_feat)
         if av_action is not None:
             avail_actions = av_action(torch.cat([agent_feat, global_feat], dim = -1)).sample()
-            pi[avail_actions == 0] = -1e10
+            pi = pi.masked_fill(avail_actions == 0, -1e10)
             action_dist = OneHotCategorical(logits=pi)
             action = action_dist.sample().squeeze(0)
             av_actions.append(avail_actions.squeeze(0))
