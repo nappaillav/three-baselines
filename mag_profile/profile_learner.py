@@ -39,9 +39,12 @@ for k, attr in _ov.items():
     if k in os.environ:
         setattr(cfg, attr, int(os.environ[k]))
 if 'ROLLOUT_LEN' in os.environ:
-    cfg.rollout_min_length = cfg.rollout_max_length = int(os.environ['ROLLOUT_LEN'])
+    if hasattr(cfg, 'rollout_max_length'):   # MAG / MAG_2
+        cfg.rollout_min_length = cfg.rollout_max_length = int(os.environ['ROLLOUT_LEN'])
+    else:                                   # MABL: imagination length is HORIZON
+        cfg.HORIZON = int(os.environ['ROLLOUT_LEN'])
 desc = {k: getattr(cfg, k, None) for k in ['MODEL_EPOCHS', 'm_r_predictor_epochs', 'm_r_updates_per_model_epoch', 'EPOCHS',
-        'PPO_EPOCHS', 'PPO_MINIBATCH', 'MODEL_BATCH_SIZE', 'BATCH_SIZE', 'SEQ_LENGTH', 'rollout_max_length',
+        'PPO_EPOCHS', 'PPO_MINIBATCH', 'MODEL_BATCH_SIZE', 'BATCH_SIZE', 'SEQ_LENGTH', 'rollout_max_length', 'HORIZON',
         'MPCHorizon', 'n_trajs', 'N_SAMPLES', 'use_MPCmodel']}
 print(f"map={map_name} n_agents={n_agents} obs={cfg.IN_DIM} act={cfg.ACTION_SIZE} device={device} threads={torch.get_num_threads()}")
 print("config:", desc)
@@ -61,13 +64,13 @@ def synth_episode(T):
     return ep
 
 def buffer_append(e):
-    rb = learner.replay_buffer
+    """Call replay_buffer.append by parameter name so MAG (7 args) and MABL (8 args, global_states 2nd) both work."""
     import inspect
-    n = len(inspect.signature(rb.append).parameters)
-    if n >= 8:   # MABL: (obs, action, reward, done, fake, last, av_action, state)
-        rb.append(e['observation'], e['action'], e['reward'], e['done'], e['fake'], e['last'], e['avail_action'], e.get('state'))
-    else:
-        rb.append(e['observation'], e['action'], e['reward'], e['done'], e['fake'], e['last'], e['avail_action'])
+    rb = learner.replay_buffer
+    names = list(inspect.signature(rb.append).parameters)
+    src = {'obs': 'observation', 'global_states': 'state', 'action': 'action', 'reward': 'reward', 'done': 'done',
+           'fake': 'fake', 'last': 'last', 'av_action': 'avail_action'}
+    rb.append(*[e[src[n]] for n in names])
 
 for _ in range(20):
     buffer_append(synth_episode(60))
@@ -102,6 +105,8 @@ wrap(L, 'value_loss', '4b PPO value_loss fwd')
 wrap(learner, 'apply_optimizer', '4c PPO apply_optimizer (bwd+step)')
 
 roll = synth_episode(60)
+if 'state' in roll:
+    roll['global_state'] = roll['state']   # MABL's learner.step reads rollout['global_state']
 t0 = time.perf_counter()
 if cuda: torch.cuda.reset_peak_memory_stats()
 learner.step(roll)
