@@ -79,7 +79,9 @@ if __name__ == "__main__":
     RANDOM_SEED = torch.randint(0, 10000, (1,)).item()
     args = parse_args()
     args.cuda_num = '0'
-    torch.set_num_threads(10)
+    torch.set_num_threads(2)   # step E (DECISIONS.md): fixed at 2 — the learner is latency-bound; more threads only steal cores from the 4 workers
+    if "SC2PATH" not in os.environ:   # step E: no hardcoded per-user path; the job script must export it
+        raise EnvironmentError("SC2PATH is not set. Export SC2PATH=<path to StarCraftII> before running train.py.")
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_num
     if args.env == Env.FLATLAND:
         configs = prepare_flatland_configs(args.env_name)
@@ -90,10 +92,6 @@ if __name__ == "__main__":
     configs["env_config"][0].ENV_TYPE = Env(args.env)
     configs["learner_config"].ENV_TYPE = Env(args.env)
     configs["controller_config"].ENV_TYPE = Env(args.env)
-
-    if sys.platform == "linux":
-        os.environ.setdefault("SC2PATH", 
-                             os.path.join("/home/chidamv/scratch/MARL/StarCraftII", "StarCraftII"))
 
     if configs["learner_config"].use_wandb:
         wandb.init(config=configs["learner_config"],
