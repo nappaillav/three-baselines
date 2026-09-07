@@ -133,9 +133,10 @@ class DreamerLearner:
         losses = np.stack(losses).mean(0) # (n_nets,)
         self.elite_idxs = np.argsort(losses)[:self.config.n_elites]
 
-        for i in range(self.config.EPOCHS):
-            samples = self.replay_buffer.sample(self.config.BATCH_SIZE) 
-            self.train_agent(samples)
+        # step C: one imagination rollout over EPOCHS x BATCH_SIZE sequences instead of EPOCHS sequential
+        # rollouts of BATCH_SIZE (the sequential MPC passes are latency-bound, so a wider batch is ~free).
+        samples = self.replay_buffer.sample(self.config.EPOCHS * self.config.BATCH_SIZE)
+        self.train_agent(samples)
 
     def _save_best(self, epoch, holdout_losses):
         updated = False
@@ -224,7 +225,7 @@ class DreamerLearner:
         for _ in range(self.config.PPO_EPOCHS):
             inds = np.random.permutation(actions.shape[0])
             
-            step = 2000
+            step = getattr(self.config, 'PPO_MINIBATCH', 2000)
             for i in range(0, len(inds), step):
                 self.cur_update += 1
                 idx = inds[i:i + step]
