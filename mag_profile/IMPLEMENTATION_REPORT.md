@@ -120,3 +120,32 @@ One learner cycle fired once 500 transitions had accumulated (N_SAMPLES), ran 20
 predictor updates, the batched imagination rollout and PPO, and the workers resumed. No NaN/Inf.
 
 Not run locally (needs a GPU job, user submits): gate F2. Not run (needs hours): F3-F5.
+
+## MAG_2 (MAMBA)
+
+MAG_2's source was byte-identical to MAG's except `use_MPCmodel=False` and the colleague's wandb
+toggles (MAG_2 never enabled wandb). Steps A, B, C, E were replayed from the MAG commits with
+`git diff <step> -- MAG | git apply --directory=MAG_2` (A and E needed `-C1` because of the wandb-import
+lines); step D's hunk did not apply (a blank line + the `use_MPCmodel=False` context) and was applied with
+the same exact-match patch as in MAG. Commit order in MAG_2 is therefore A, B, C, E, D.
+After replay, `diff -r MAG MAG_2` shows only: the wandb import/flag lines, `use_MPCmodel`, the two
+MPC-knob comments, and the shell scripts — i.e. the shared code is identical, so the step A/B exactness
+checks (which exercise code paths MAG_2 never runs) were not repeated.
+
+Applicability: A (predictor) and B's MPC rewrite are dormant in MAG_2 (`use_MPCmodel=False`), but keeping
+the files identical avoids divergence; B's `masked_fill` and C, D (non-MPC values), E apply fully.
+
+Profiler, decided config as in the repo (`use_MPC=0`, CPU 8 threads):
+```
+TOTAL learner.step = 47.4s   (one cycle per 500 env steps)
+1 model update                 20   30.45   1.522/call
+3 actor_rollout (total)         1    7.57   (single 160-sequence rollout, imagination length 5)
+4 PPO: 60 minibatches               8.7
+```
+Smoke run (`3m`, 1 worker, CPU): with 16 episodes no cycle fired — the 16 short random-policy episodes
+summed to <500 transitions (N_SAMPLES); with 28 episodes:
+```
+[smoke] train_agent done in 21.1s; model losses this cycle: first=13.226 last=8.123 all_finite=True
+map: 3m, cur_step: 616, incre_win_rate: 0.0
+[smoke] finished 28 episodes in 70s      exit 0
+```
