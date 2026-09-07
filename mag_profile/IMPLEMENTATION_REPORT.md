@@ -81,3 +81,19 @@ Profiler after C (shipped config, MODEL 10, EPOCHS 4): `actor_rollout` called **
 epochs). On CPU the single wide rollout costs 246 s = ~4 x the 62 s single-batch rollout, i.e. no CPU
 saving — CPU is compute-bound. The saving (4x fewer sequential latency-bound passes) is a GPU effect;
 gate F2 measures it.
+
+### Step D — decided hyperparameters (`configs/dreamer/DreamerLearnerConfig.py`)
+`MODEL_BATCH_SIZE 40->120`, `MODEL_EPOCHS 60->20`, `N_SAMPLES 1->500` (transitions), imagination
+`rollout_min/max_length 15->5`, `MPCHorizon 6->3`, `n_trajs 4->2`; plus the step A/C knobs
+`m_r_updates_per_model_epoch=1`, `PPO_MINIBATCH=1000`. `MODEL_LR` unchanged (5e-4).
+
+Profiler after D, config exactly as in the repo (CPU, 8 threads) — one cycle now serves 500 env steps:
+```
+TOTAL learner.step = 61.1s          (baseline shipped: ~419 s per cycle, one cycle per ~70-step episode)
+1 model update                 20   29.73   1.486/call   (batch 120; CPU compute-bound)
+2b m_r: predictor update       20    0.91
+3 actor_rollout (total)         1   21.61   (single 160-sequence rollout, imagination (5, 2880, 3, 1024))
+3b-i   MPCPredict calls         5   16.89   3.38/call
+4 PPO: 60 minibatches (11,520 rows / 1000 x 5 epochs)   8.2
+```
+Per env step on CPU: 419/70 = 6.0 s -> 61/500 = 0.12 s (~50x). GPU figures: gate F2.

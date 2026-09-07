@@ -31,11 +31,11 @@ class DreamerLearnerConfig(DreamerConfig):
         # self.CAPACITY = 250000
         self.CAPACITY = 150000
         self.MIN_BUFFER_SIZE = 500
-        self.MODEL_EPOCHS = 60
+        self.MODEL_EPOCHS = 20          # step D (was 60): 20 x batch 120 = same 2,400 sequences/cycle
         self.EPOCHS = 4                 # since step C: multiplier of BATCH_SIZE for the single batched imagination rollout
         self.PPO_EPOCHS = 5
         self.PPO_MINIBATCH = 1000       # step C: PPO minibatch rows (was the literal 2000 in train_agent)
-        self.MODEL_BATCH_SIZE = 40
+        self.MODEL_BATCH_SIZE = 120     # step D (was 40)
 
         # self.max_MODEL_BATCH_SIZE = 2000
         self.max_MODEL_BATCH_SIZE = 1200
@@ -44,14 +44,14 @@ class DreamerLearnerConfig(DreamerConfig):
 
         self.BATCH_SIZE = 40
         self.SEQ_LENGTH = 20
-        self.N_SAMPLES = 1
+        self.N_SAMPLES = 500            # step D (was 1): transitions between learner cycles
         self.TARGET_UPDATE = 1
         self.DEVICE = 'cuda'
         # self.DEVICE = 'cpu'
         self.GRAD_CLIP = 100.0
         self.HORIZON = 10
-        self.rollout_min_length = 15
-        self.rollout_max_length = 15
+        self.rollout_min_length = 5     # step D (was 15): imagination length is constant (min == max)
+        self.rollout_max_length = 5
         self.rollout_min_step = 1e3
         self.rollout_max_step = 2e4
 
@@ -63,8 +63,8 @@ class DreamerLearnerConfig(DreamerConfig):
         self.pcont = True
         self.dis = True
 
-        self.MPCHorizon = 6
-        self.n_trajs = 4
+        self.MPCHorizon = 3             # step D (was 6)
+        self.n_trajs = 2                # step D (was 4)
         self.DeterPolForMo = False
         self.use_epsilon_MPC = False
         self.MPCepsilon = 0.02
