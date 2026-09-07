@@ -149,3 +149,61 @@ summed to <500 transitions (N_SAMPLES); with 28 episodes:
 map: 3m, cur_step: 616, incre_win_rate: 0.0
 [smoke] finished 28 episodes in 70s      exit 0
 ```
+
+## MABL (`MABL/mabl`)
+
+MABL differs structurally: a bi-level (agent + global) RSSM, no MPC and no model-error predictor, a
+single-process runner (`DreamerRunner` drives one in-process `DreamerWorker`; the ray server is
+commented out, so `--n_workers` is inert), and `HORIZON` is its imagination length.
+
+| plan step | MABL | what was done |
+|---|---|---|
+| 0 | applicable | profiler now handles MABL's buffer signature (`global_states` 2nd arg), feeds `rollout['global_state']`, treats `HORIZON` as the rollout length |
+| A | **not applicable** — no `m_r` predictor, no second loss loop; nothing redundant to remove in `model_loss` (single pass) | — |
+| B | MPC rewrite **not applicable** (no `MPCPredict`/`para_predict`); the `masked_fill` part applies | `rnns.py::rollout_policy`, `loss.py::actor_loss`, `DreamerController.step` use `masked_fill` (exact: same values, no in-place mask write) |
+| C | applicable | `DreamerLearner.step`: one `EPOCHS*BATCH_SIZE` rollout; `train_agent` minibatch = `PPO_MINIBATCH` (new, 1000) |
+| D | applicable except the MPC knobs | `MODEL_BATCH_SIZE 40->120`, `MODEL_EPOCHS 60->20`, `N_SAMPLES 1->500`, `HORIZON 15->5` |
+| E | threads + SC2PATH applicable; ray part not applicable (no ray) | `train.py`: `torch.set_num_threads(2)`, `SC2PATH` required. Job scripts: reuse `cc_mag_rorqual.sh`/`cc_mag_narval.sh` with the repo argument `.../MABL/mabl`; `--n_workers` has no effect there |
+
+Baseline profiler (shipped code/config, MODEL 10, EPOCHS 1, CPU): TOTAL 25.3 s — model 1.02 s/epoch,
+actor_rollout 5.96 s, PPO 30 minibatches 12.2 s.
+Profiler after B-E, decided config as in the repo (CPU, 8 threads):
+```
+TOTAL learner.step = 59.0s   (one cycle per 500 env steps)
+1 model update                 20   38.77   1.939/call   (batch 120; bi-level RSSM is heavier than MAG's)
+3 actor_rollout (total)         1    8.31   (single 160-sequence rollout, HORIZON 5)
+4 PPO: 60 minibatches (140 optimizer steps incl. critic)  24.4
+```
+Smoke run (`3m`, CPU, 28 episodes; wrapper only):
+```
+[smoke] train_agent done in 18.7s; model losses this cycle: first=12.768 last=8.838 all_finite=True
+map: 3m, cur_step: 615, incre_win_rate: 0.0
+[smoke] finished 28 episodes in 68s      exit 0
+```
+
+## Summary of commits on `speedup`
+MAG: 36f4fd1 (0), 38b0924 (A), 9bc10dd (B), 9953bab (C), 6a70448 (D), 720b0da (E), e204158 (report).
+MAG_2: 3b30cb3 (A), fbc498a (B), 14ae78c (C), 3467233 (E), f5db0a1 (D), fe1eca8 (report).
+MABL: ccd5d91 (0), 656e163 (B), ff2bab7 (C), 0cda353 (D), 18c9874 (E). Nothing pushed.
+
+## What is NOT done, and why
+- **Gate F2 (GPU per-phase time + peak memory)** needs a GPU job; not run here (no job submission by me).
+  It is also the only measurement of the step B/C effect, which is invisible on CPU (compute-bound).
+- **Gates F3-F5** (100k-step win-rate check, 4-worker system-stats check, one full 2M-step run) need hours
+  of GPU time.
+- MAG's shipped-code baseline at the *full* 60/60/4 epochs was not timed on CPU (would exceed the login-node
+  budget); reduced-epoch tables above scale linearly and match the earlier A100 measurements.
+- `MODEL_LR` left at 5e-4 (MAG/MAG_2) and 3e-4 (MABL) as the plan says; revisit if the model loss plateaus
+  with batch 120.
+- No checkpoint/resume was added (plan E.4 flags it): `--time` must cover a whole run.
+
+## Commands for the user (gate F2 and first runs) — run from a Rorqual login node
+```
+cd /scratch/zwang182/three-baselines-valliappan/mag_profile
+sbatch cc_mag_profile_gpu.sh                      # F2: MAG (decided + shipped hyperparameters), MAG_2, MABL; ~30 min on an H100 3g.40gb
+sbatch cc_mag_rorqual.sh 3s_vs_4z                 # MAG, decided allocation (H100 3g.40gb, 8 cores, 4 workers), 14 h
+sbatch cc_mag_rorqual.sh 3s_vs_4z /scratch/zwang182/three-baselines-valliappan/MAG_2      # MAMBA
+sbatch cc_mag_rorqual.sh 3s_vs_4z /scratch/zwang182/three-baselines-valliappan/MABL/mabl  # MABL (single-process)
+```
+On Narval use `cc_mag_narval.sh` after setting its REPO/VENV/SC2PATH lines and confirming the MIG gres
+name (`sinfo -o "%G" | sort -u`). Both Rorqual scripts passed `sbatch --test-only`.
