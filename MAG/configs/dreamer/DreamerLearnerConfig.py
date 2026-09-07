@@ -69,8 +69,9 @@ class DreamerLearnerConfig(DreamerConfig):
         self.MPCepsilon = 0.02
         self.discount_MPC = False
         self.MPCgamma = 0.995
-        self.m_r_predictor_epochs = 60
+        self.m_r_predictor_epochs = 60          # unused since step A (predictor trains inside the model loop)
         self.m_r_predictor_batch_size = 40
+        self.m_r_updates_per_model_epoch = 1    # step A: predictor updates per model epoch
 
         self.ENTROPY = 0.001
         self.ENTROPY_ANNEALING = 0.99998

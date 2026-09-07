@@ -11,7 +11,7 @@ import itertools
 import wandb
 from agent.memory.DreamerMemory import DreamerMemory
 from agent.models.DreamerModel import DreamerModel
-from agent.optim.loss import model_loss, actor_loss, value_loss, actor_rollout, m_r_perdictor_loss, get_model_loss_for_m_r_training
+from agent.optim.loss import model_loss, actor_loss, value_loss, actor_rollout, m_r_predictor_loss
 from agent.optim.utils import advantage
 from environments import Env
 from networks.dreamer.action import Actor
@@ -122,23 +122,16 @@ class DreamerLearner:
         self.replay_buffer.init_sampled_idx()
         for i in range(self.config.MODEL_EPOCHS):
             samples = self.replay_buffer.sample(self.config.MODEL_BATCH_SIZE)
-            loss = self.train_model(samples)
+            loss, mr_input, mr_label = self.train_model(samples)
             losses.append(loss)
+            # step A: the m_r predictor trains on the per-step model error and prior features that this
+            # model epoch already computed (no extra world-model rollouts).
+            if self.config.use_MPCmodel:
+                assert len(self.model) == 1
+                for _ in range(getattr(self.config, 'm_r_updates_per_model_epoch', 1)):
+                    self.train_m_r_predictor(mr_input, mr_label)
         losses = np.stack(losses).mean(0) # (n_nets,)
         self.elite_idxs = np.argsort(losses)[:self.config.n_elites]
-        # ------------------------train m_r_predictor--------------------------------
-        if self.config.use_MPCmodel:
-            
-            assert len(self.model) == 1
-            
-            for epoch in range(self.config.m_r_predictor_epochs):
-                samples = self.replay_buffer.sample(self.config.MODEL_BATCH_SIZE)
-                with torch.no_grad():
-                    _, loss_per_step = get_model_loss_for_m_r_training(self.config, self.model[0], samples['observation'], samples['action'], samples['av_action'],
-                    samples['reward'], samples['done'], samples['fake'], samples['last']) # (T-1,)
-                self.train_m_r_predictor(samples, loss_per_step)
-
-        
 
         for i in range(self.config.EPOCHS):
             samples = self.replay_buffer.sample(self.config.BATCH_SIZE) 
@@ -169,12 +162,10 @@ class DreamerLearner:
         self._epochs_since_update = 0
         self._snapshots = {i: (None, 1e10) for i in range(self.config.n_nets)}
 
-    def train_m_r_predictor(self, mini_sample, mini_loss):
+    def train_m_r_predictor(self, mr_input, mr_label):
         self.m_r_predictor.train()
-        assert len(self.model) == 1
         mr_losses = []
-        m_r_loss = m_r_perdictor_loss(self.config, self.model[0], self.m_r_predictor, mini_sample['observation'], 
-            mini_sample['action'], mini_sample['av_action'], mini_sample['reward'], mini_sample['done'], mini_sample['fake'], mini_sample['last'], mini_loss)
+        m_r_loss = m_r_predictor_loss(self.m_r_predictor, mr_input, mr_label)
         self.m_r_optim.zero_grad()
         m_r_loss.backward()
         mr_losses.append(m_r_loss.item())
@@ -190,7 +181,7 @@ class DreamerLearner:
             model.train()
             self.model_optimizer[i].zero_grad()
         
-            loss, _ = model_loss(self.config, model, samples['observation'], samples['action'], samples['av_action'],
+            loss, mr_label, mr_input = model_loss(self.config, model, samples['observation'], samples['action'], samples['av_action'],
                           samples['reward'], samples['done'], samples['fake'], samples['last'])
             losses.append(loss.detach().item())
             loss.backward()
@@ -198,7 +189,7 @@ class DreamerLearner:
             self.model_optimizer[i].step()
             model.eval()
         # self.apply_optimizer(self.model_optimizer, self.model, loss, self.config.GRAD_CLIP)            
-        return np.array(losses)
+        return np.array(losses), mr_input, mr_label
 
     def train_agent(self, samples):
         actions_ens, av_actions_ens, old_policy_ens, imag_feat_ens, returns_ens, imag_obs_ens = [list() for i in range(6)]

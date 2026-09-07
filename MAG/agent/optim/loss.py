@@ -9,65 +9,6 @@ from agent.utils.params import FreezeParameters
 from networks.dreamer.rnns import rollout_representation, rollout_policy
 
 
-def m_r_perdictor_loss(config, model, m_r_predictor, obs, action, av_action, reward, done, fake, last, loss):
-    # shape: (T, B, n_ags, _dim); loss.shape: (T-1, B, n_ags, 1)
-    time_steps, batch_size, n_agents = obs.shape[:3]
-    embed = model.observation_encoder(obs.reshape(-1, n_agents, obs.shape[-1]))
-    embed = embed.reshape(time_steps, batch_size, n_agents, -1)
-
-    prev_state = model.representation.initial_state(batch_size, n_agents, device=obs.device)
-    prior = rollout_representation(model.representation, time_steps, embed, action, prev_state, last)[0]
-    # feat = torch.cat([post.stoch, deters], -1) # (T-1, B, n_ags, _dim)
-    feat = prior.get_features() # (T-1, B, n_ags, _dim)
-
-    inputs = feat.reshape(-1, n_agents, feat.shape[-1]).detach()
-    label = loss.reshape(-1, n_agents, loss.shape[-1])
-    # feats = o_a_feat(inputs) # (-1, n_ags, _dim) # .reshape(time_steps - 1, batch_size, n_agents, feats.shape[-1]).sum(-2)
-    output = m_r_predictor(inputs)
-    return F.smooth_l1_loss(output, label)
-
-def get_model_loss_for_m_r_training(config, model, obs, action, av_action, reward, done, fake, last):
-    time_steps, batch_size, n_agents = obs.shape[:3] # T=19
-
-    embed = model.observation_encoder(obs.reshape(-1, n_agents, obs.shape[-1]))
-    embed = embed.reshape(time_steps, batch_size, n_agents, -1)
-
-    prev_state = model.representation.initial_state(batch_size, n_agents, device=obs.device)
-    prior, post, deters = rollout_representation(model.representation, time_steps, embed, action, prev_state, last)
-    feat = torch.cat([post.stoch, deters], -1) # (T-1, B, n_ags, _dim)
-    feat_dec = post.get_features()
-
-    _, i_feat, rec_loss_per_step = rec_loss(model.observation_decoder,
-                                           feat_dec.reshape(-1, n_agents, feat_dec.shape[-1]),
-                                           obs[:-1].reshape(-1, n_agents, obs.shape[-1]),
-                                           1. - fake[:-1].reshape(-1, n_agents, 1))
-    rec_loss_per_step = rec_loss_per_step.reshape(time_steps - 1, batch_size, n_agents, -1).mean(dim=-1, keepdim=True)
-
-    # print(model.reward_model(feat).shape, reward[1:].shape) # (T-1, B, n_ags, 1)
-    _, div_per_step = state_divergence_loss(prior, post, config)
-    div_per_step = div_per_step.unsqueeze(-1)
-
-    model_loss_per_step = div_per_step 
-    if config.rec:
-        model_loss_per_step += rec_loss_per_step
-    if config.rew:
-        rew_loss_per_step = F.smooth_l1_loss(model.reward_model(feat), reward[1:], reduction='none') # (T-1, B, n_ags, 1)
-        model_loss_per_step += rew_loss_per_step
-    if config.avl:
-        _, av_loss_per_step = log_prob_loss(model.av_action, feat_dec, av_action[:-1]) if av_action is not None else 0.
-        av_loss_per_step = av_loss_per_step.unsqueeze(-1)
-        model_loss_per_step += av_loss_per_step
-    if config.pcont:
-        _, pcont_loss_per_step = log_prob_loss(model.pcont, feat, (1. - done[1:])) # (T-1, B, n_ags)
-        pcont_loss_per_step = pcont_loss_per_step.unsqueeze(-1)
-        model_loss_per_step += pcont_loss_per_step
-    if config.dis:
-        i_feat = i_feat.reshape(time_steps - 1, batch_size, n_agents, -1)
-        dis_loss_per_step = info_loss(i_feat[1:], model, action[1:-1], 1. - fake[1:-1].reshape(-1))[1]
-        model_loss_per_step[1:] += dis_loss_per_step.reshape(time_steps-2, batch_size, n_agents, 1)
-
-    return None, model_loss_per_step
-
 def model_loss(config, model, obs, action, av_action, reward, done, fake, last):
     time_steps, batch_size, n_agents = obs.shape[:3] # T=19
 
@@ -94,15 +35,27 @@ def model_loss(config, model, obs, action, av_action, reward, done, fake, last):
     pcont_loss_per_step, av_loss_per_step = pcont_loss_per_step.unsqueeze(-1), av_loss_per_step.unsqueeze(-1)
 
     i_feat = i_feat.reshape(time_steps - 1, batch_size, n_agents, -1)
-    dis_loss, _ = info_loss(i_feat[1:], model, action[1:-1], 1. - fake[1:-1].reshape(-1))
+    dis_loss, dis_per_step = info_loss(i_feat[1:], model, action[1:-1], 1. - fake[1:-1].reshape(-1))
 
     div, div_per_step = state_divergence_loss(prior, post, config)
     div_per_step = div_per_step.unsqueeze(-1)
 
     model_loss = div + reward_loss + dis_loss + reconstruction_loss + pcont_loss + av_action_loss
-    model_loss_per_step = rec_loss_per_step + rew_loss_per_step + pcont_loss_per_step + div_per_step + av_loss_per_step
+    # Per-step model error = label for the m_r predictor (step A): same terms as the old
+    # get_model_loss_for_m_r_training, incl. the action-information (dis) term on steps 1:.
+    model_loss_per_step = (rec_loss_per_step + rew_loss_per_step + pcont_loss_per_step + div_per_step + av_loss_per_step).detach()
+    model_loss_per_step[1:] += dis_per_step.detach().reshape(time_steps - 2, batch_size, n_agents, 1)
+    # Predictor input = prior features (prior.stoch, prior.deter) for steps 0..T-2, as m_r_perdictor_loss used.
+    mr_input = prior.get_features().detach()
 
-    return model_loss, model_loss_per_step.detach()
+    return model_loss, model_loss_per_step, mr_input
+
+
+def m_r_predictor_loss(m_r_predictor, mr_input, mr_label):
+    """Predictor loss on cached model-phase tensors (step A): mr_input (T-1, B, n_ags, FEAT), mr_label (T-1, B, n_ags, 1)."""
+    n_agents = mr_input.shape[2]
+    output = m_r_predictor(mr_input.reshape(-1, n_agents, mr_input.shape[-1]))
+    return F.smooth_l1_loss(output, mr_label.reshape(-1, n_agents, 1))
 
 def get_max_rollout_length(args, env_step):
     rollout_length = (min(max(args.rollout_min_length + (env_step - args.rollout_min_step)

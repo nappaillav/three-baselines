@@ -32,3 +32,21 @@ TOTAL learner.step = 79.8s
 3b-i   MPCPredict calls                    20  16.67   0.833
 4 PPO (40 minibatches)                          8.0
 ```
+
+### Step A — predictor trained on model-phase losses (exact)
+Changes: `agent/optim/loss.py::model_loss` now also returns the per-step model error **including the
+`dis` term on steps 1:** (the label the old `get_model_loss_for_m_r_training` produced) and the prior
+features `prior.get_features()` (the input the old `m_r_perdictor_loss` recomputed); new tensor-only
+`m_r_predictor_loss(m_r_predictor, mr_input, mr_label)`; old `get_model_loss_for_m_r_training` and
+`m_r_perdictor_loss` deleted. `DreamerLearner.train_model` returns `(losses, mr_input, mr_label)`;
+`train_m_r_predictor(mr_input, mr_label)`; `step` runs `m_r_updates_per_model_epoch` (new config, =1)
+predictor updates right after each model epoch and the separate 60-epoch loop is gone.
+
+Exactness (fixed seed, untrained model, same batch, old vs new in one process):
+```
+label max|diff| 1.9e-06  allclose: True   (shape (18, 40, 3, 1))
+input max|diff| 0.0      allclose: True   (shape (18, 40, 3, 1280))
+STEP A EXACTNESS: PASS
+```
+Profiler after A (shipped config, 10 model epochs, EPOCHS 1): m_r phase 9.5 s -> 0.17 s (10 predictor
+updates at 17 ms); everything else unchanged. TOTAL 90.1 s -> 75.2 s.
