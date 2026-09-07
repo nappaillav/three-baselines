@@ -12,8 +12,9 @@ class DreamerLearnerConfig(DreamerConfig):
         self.CAPACITY = 250000
         self.MIN_BUFFER_SIZE = 500
         self.MODEL_EPOCHS = 60
-        self.EPOCHS = 4
+        self.EPOCHS = 4                 # since step C: multiplier of BATCH_SIZE for the single batched imagination rollout
         self.PPO_EPOCHS = 5
+        self.PPO_MINIBATCH = 1000       # step C: PPO minibatch rows (was the literal 2000 in train_agent)
         self.MODEL_BATCH_SIZE = 40
         self.BATCH_SIZE = 40
         self.SEQ_LENGTH = 20

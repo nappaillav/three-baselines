@@ -107,9 +107,10 @@ class DreamerLearner:
             samples = self.replay_buffer.sample(self.config.MODEL_BATCH_SIZE)
             self.train_model(samples)
 
-        for i in range(self.config.EPOCHS):
-            samples = self.replay_buffer.sample(self.config.BATCH_SIZE)
-            self.train_agent(samples)
+        # step C: one imagination rollout over EPOCHS x BATCH_SIZE sequences instead of EPOCHS sequential
+        # rollouts of BATCH_SIZE (the sequential RSSM passes are latency-bound, so a wider batch is ~free).
+        samples = self.replay_buffer.sample(self.config.EPOCHS * self.config.BATCH_SIZE)
+        self.train_agent(samples)
 
     def train_model(self, samples):
         self.model.train()
@@ -134,7 +135,7 @@ class DreamerLearner:
         #print(actions.shape, imag_feat.shape)
         for epoch in range(self.config.PPO_EPOCHS):
             inds = np.random.permutation(actions.shape[0])
-            step = 2000
+            step = getattr(self.config, 'PPO_MINIBATCH', 2000)
             for i in range(0, len(inds), step):
                 self.cur_update += 1
                 idx = inds[i:i + step]
