@@ -8,6 +8,7 @@ import torch
 import socket
 import setproctitle
 import itertools
+import wandb
 
 from agent.memory.DreamerMemory import DreamerMemory
 from agent.models.DreamerModel import DreamerModel

@@ -1,5 +1,5 @@
 import ray
-#import wandb
+import wandb
 
 from agent.workers.DreamerWorker import DreamerWorker
 

@@ -44,7 +44,7 @@ class DreamerConfig(Config):
         self.IN_DIM = 30
         self.STATE_DIM = 48
         self.LOG_FOLDER = 'wandb/'
-        self.use_wandb = False
+        self.use_wandb = True
 
 
 @dataclass

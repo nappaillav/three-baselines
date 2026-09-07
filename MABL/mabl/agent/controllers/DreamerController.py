@@ -65,7 +65,7 @@ class DreamerController:
           action.detach()
           pi.detach()
           if avail_actions is not None:
-              pi = pi.masked_fill(avail_actions == 0, -1e10)
+              pi = pi.masked_fill(avail_actions.to(pi.device) == 0, -1e10)
               action_dist = OneHotCategorical(logits=pi)
               action = action_dist.sample()
 

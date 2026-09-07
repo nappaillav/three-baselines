@@ -2,9 +2,9 @@ import argparse
 import os
 import torch
 import sys
-# import socket
-# import setproctitle
-# import wandb
+import socket
+import setproctitle
+import wandb
 
 from agent.runners.DreamerRunner import DreamerRunner
 from configs import Experiment
@@ -96,8 +96,8 @@ if __name__ == "__main__":
 
     if configs["learner_config"].use_wandb:
         wandb.init(config=configs["learner_config"],
-                    project='',
-                    entity='',
+                    project='MAG2',
+                    # entity='',
                     notes=socket.gethostname(),
                     name='S4_' + str(RANDOM_SEED) + '_' + args.cuda_num,
                     group=args.env_name,

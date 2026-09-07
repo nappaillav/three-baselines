@@ -102,8 +102,8 @@ gres name once with `sinfo -o "%G" | sort -u` (expected `a100_3g.20gb`). Then:
 ```bash
 cd mag_profile
 sbatch cc_mag_narval.sh 3s_vs_4z                                   # MAG
-sbatch cc_mag_narval.sh 3s_vs_4z $HOME/projects/three-baselines/MAG_2      # MAMBA
-sbatch cc_mag_narval.sh 3s_vs_4z $HOME/projects/three-baselines/MABL/mabl  # MABL
+sbatch cc_mag_narval.sh 3s_vs_4z /home/chidamv/projects/def-dpmeger/chidamv/three-baselines/MAG_2      # MAMBA
+sbatch cc_mag_narval.sh 3s_vs_4z /home/chidamv/projects/def-dpmeger/chidamv/three-baselines/MABL/mabl  # MABL
 ```
 
 ### Before scaling out: the two checks that still need a GPU

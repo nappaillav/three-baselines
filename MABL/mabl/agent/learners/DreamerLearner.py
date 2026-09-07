@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 
 from agent.memory.DreamerMemory import DreamerMemory
 from agent.models.DreamerModel import DreamerModel
@@ -131,7 +132,7 @@ class DreamerLearner:
         adv = returns.detach() - self.critic(agent_imag_feat, global_imag_feat, actions).detach()
         if self.config.ENV_TYPE == Env.STARCRAFT:
             adv = advantage(adv)
-        #wandb.log({'Agent/Returns': returns.mean()})
+        wandb.log({'Agent/Returns': returns.mean()})
         #print(actions.shape, imag_feat.shape)
         for epoch in range(self.config.PPO_EPOCHS):
             inds = np.random.permutation(actions.shape[0])
@@ -144,8 +145,8 @@ class DreamerLearner:
                 self.apply_optimizer(self.actor_optimizer, self.actor, loss, self.config.GRAD_CLIP_POLICY)
                 self.entropy *= self.config.ENTROPY_ANNEALING
                 val_loss = value_loss(self.critic, actions[idx], agent_imag_feat[idx], global_imag_feat[idx], returns[idx])
-                #if np.random.randint(20) == 9:
-                #    wandb.log({'Agent/val_loss': val_loss, 'Agent/actor_loss': loss})
+                if np.random.randint(20) == 9:
+                   wandb.log({'Agent/val_loss': val_loss, 'Agent/actor_loss': loss})
                 self.apply_optimizer(self.critic_optimizer, self.critic, val_loss, self.config.GRAD_CLIP_POLICY)
                 if self.config.ENV_TYPE == Env.FLATLAND and self.cur_update % self.config.TARGET_UPDATE == 0:
                     self.old_critic = deepcopy(self.critic)

@@ -36,7 +36,7 @@ class DreamerConfig(Config):
         self.IN_DIM = 30
         self.LOG_FOLDER = 'wandb/'
 
-        self.use_wandb = False
+        self.use_wandb = True
         self.obs_as_pol_in = False
         self.use_attn = True
 

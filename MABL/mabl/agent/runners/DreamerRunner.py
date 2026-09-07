@@ -1,5 +1,5 @@
 import ray
-# import wandb
+import wandb
 # wandb.login(key = [85a593faec6432f3c0804364fdd9006072f160c1])
 from agent.workers.DreamerWorker import DreamerWorker
 import numpy as np, random

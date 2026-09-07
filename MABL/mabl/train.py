@@ -15,6 +15,10 @@ from environments import Env
 import torch
 import numpy as np
 import random, os
+import socket
+import setproctitle
+import wandb
+
 def set_all_seeds(seed):
   random.seed(seed)
   #os.environ('PYTHONHASHSEED') = str(seed)
@@ -92,7 +96,7 @@ def prepare_flatland_configs(env_name):
 
 
 if __name__ == "__main__":
-    RANDOM_SEED = 23
+    RANDOM_SEED = torch.randint(0, 10000, (1,)).item()
     #set_all_seeds(100)
     args = parse_args()
     torch.set_num_threads(2)   # step E (DECISIONS.md): fixed at 2 — the learner is latency-bound
@@ -108,6 +112,21 @@ if __name__ == "__main__":
     configs["learner_config"].ENV_TYPE = Env(args.env)
     configs["controller_config"].ENV_TYPE = Env(args.env)
     
+    if configs["learner_config"].use_wandb:
+        wandb.init(config=configs["learner_config"],
+                    project='MABL',
+                    # entity='',
+                    notes=socket.gethostname(),
+                    name='MABL_' + str(RANDOM_SEED) + '_' ,
+                    group=args.env_name,
+                    dir=configs["learner_config"].LOG_FOLDER,
+                    job_type="training",
+                    reinit=True)
+        wandb.define_metric('total_step')
+        wandb.define_metric('incre_win_rate', step_metric='total_step')
+        wandb.define_metric('aver_step_reward', step_metric='total_step')
+        
+
     exp = Experiment(steps=args.steps,
                      episodes=50000,
                      random_seed=RANDOM_SEED,
