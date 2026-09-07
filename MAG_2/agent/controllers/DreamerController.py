@@ -70,7 +70,7 @@ class DreamerController:
         # print(11111, observations.shape, feats.shape) # (1, n_ags, _dim) (1, n_ags, _dim)
         action, pi = self.actor(feats)
         if avail_actions is not None:
-            pi[avail_actions == 0] = -1e10
+            pi = pi.masked_fill(avail_actions == 0, -1e10)
             action_dist = OneHotCategorical(logits=pi)
             action = action_dist.sample()
 

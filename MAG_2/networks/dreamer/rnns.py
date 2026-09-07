@@ -101,26 +101,18 @@ class RSSMTransition(nn.Module):
         # print(deter_state.shape, stoch_state.shape, logits.shape) 
         return RSSMState(logits=logits, stoch=stoch_state, deter=deter_state)
 
-    def para_predict(self, prev_actions, prev_states, mask=None):
-        n_trajs, batch_size, n_agents = prev_actions.shape[:3]
-        prev_actions = prev_actions.reshape(n_trajs * batch_size, n_agents, -1) # (n_traj*B, n_ags, _dim)
-        stoch = torch.cat([prev_state.stoch for prev_state in prev_states], dim=0) # (n_traj*B, n_ags, _dim)
-        deter = torch.cat([prev_state.deter for prev_state in prev_states], dim=0) # (n_traj*B, n_ags, _dim)
-        stoch_input = self._rnn_input_model(torch.cat([prev_actions, stoch], dim=-1)) # (n_traj*B, n_ags, _dim)
-        
+    def para_predict_flat(self, prev_actions, stoch, deter, mask=None):
+        """Flat-batch transition step for MPC (step B). Inputs (n_trajs*B, n_agents, .) -> (logits, stoch, deter), same leading dims."""
+        NB, n_agents = prev_actions.shape[:2]
+        stoch_input = self._rnn_input_model(torch.cat([prev_actions, stoch], dim=-1))
         if self.config.use_attn:
-            attn = self._attention_stack(stoch_input, mask=mask) # NOTE
+            attn = self._attention_stack(stoch_input, mask=mask)
         else:
             attn = self._fc(stoch_input)
-        
-        deter_state = self._cell(attn.reshape(1, n_trajs * batch_size * n_agents, -1),
-                                 deter.reshape(1, n_trajs * batch_size * n_agents, -1))[0]
-        deter_state = deter_state.reshape(n_trajs * batch_size, n_agents, -1)
-        logits, stoch_state = self._stochastic_prior_model(deter_state) # NOTE
-        logits, stoch_state, deter_state = logits.reshape(n_trajs, batch_size, n_agents, logits.shape[-1]), \
-                                    stoch_state.reshape(n_trajs, batch_size, n_agents, stoch_state.shape[-1]),\
-                                    deter_state.reshape(n_trajs, batch_size, n_agents, deter_state.shape[-1])
-        return [RSSMState(logits=logits[i], stoch=stoch_state[i], deter=deter_state[i]) for i in range(n_trajs)], logits, stoch_state, deter_state
+        deter_state = self._cell(attn.reshape(1, NB * n_agents, -1),
+                                 deter.reshape(1, NB * n_agents, -1))[0].reshape(NB, n_agents, -1)
+        logits, stoch_state = self._stochastic_prior_model(deter_state)
+        return logits, stoch_state, deter_state
 
 
 class RSSMRepresentation(nn.Module):
@@ -188,7 +180,6 @@ def rollout_policy(m_r_predictor, obs_decoder, transition_model, av_action, step
     av_actions = []
     policies = []
     imag_obs = []
-    minlosses, ranlosses = [], []
     for t in range(steps):
         feat = state.get_features().detach() # (B, n_ags, _dim)
         # if t == 0: # initialize rnn hidden state
@@ -202,7 +193,7 @@ def rollout_policy(m_r_predictor, obs_decoder, transition_model, av_action, step
             action, pi = policy(feat)
         if av_action is not None:
             avail_actions = av_action(feat).sample()
-            pi[avail_actions == 0] = -1e10
+            pi = pi.masked_fill(avail_actions == 0, -1e10)
             action_dist = OneHotCategorical(logits=pi)
             action = action_dist.sample().squeeze(0)
             av_actions.append(avail_actions.squeeze(0))
@@ -214,16 +205,9 @@ def rollout_policy(m_r_predictor, obs_decoder, transition_model, av_action, step
                 state = transition_model(action, state) 
             else:
                 with torch.no_grad():
-                    state, minloss, ranloss = MPCPredict(policy, m_r_predictor, action, state, transition_model, config, av_action=av_action)
-                    minlosses.append(minloss)
-                    ranlosses.append(ranloss)
+                    state = MPCPredict(policy, m_r_predictor, action, state, transition_model, config, av_action=av_action)
         else:
             state = transition_model(action, state)
-    minlosses, ranlosses = np.array(minlosses), np.array(ranlosses)
-    for i in reversed(range(len(minlosses))):
-        minlosses[i], ranlosses[i] = minlosses[:i+1].sum(), ranlosses[:i+1].sum()
-    # print('minlosses: {}'.format(np.around(np.array(minlosses), decimals=2)))
-    # print('ranlosses: {}'.format(np.around(np.array(ranlosses), decimals=2)))
     return {"imag_states": stack_states(next_states, dim=0),
             "actions": torch.stack(actions, dim=0),
             "av_actions": torch.stack(av_actions, dim=0) if len(av_actions) > 0 else None,
@@ -232,44 +216,37 @@ def rollout_policy(m_r_predictor, obs_decoder, transition_model, av_action, step
 
 
 def MPCPredict(policy, m_r_predictor, action, state, transition_model, config, av_action):
-    onehot = OneHot(out_dim=action.shape[-1])
+    """Random-shooting MPC over n_trajs candidate trajectories (step B: no host syncs, flat batches).
+    Returns the first-step prediction of the trajectory with the lowest accumulated predicted model error."""
+    K = config.n_trajs
     batch_size, n_agents = action.shape[:2]
-    traj_states = [state] * config.n_trajs
-    action = action.unsqueeze(0).repeat(config.n_trajs, 1, 1, 1) # (n_trajs, B, n_ags, _dim)
-    # traj_losses = np.zeros((config.n_trajs, batch_size))
-    traj_losses = np.zeros((config.n_trajs))
+
+    def rep(x):  # (B, n_agents, d) -> (K*B, n_agents, d), trajectory-major
+        return x.unsqueeze(0).expand(K, *x.shape).reshape(K * batch_size, *x.shape[1:])
+
+    act, stoch, deter = rep(action), rep(state.stoch), rep(state.deter)
+    traj_losses = torch.zeros(K, device=action.device)
     for t in range(config.MPCHorizon):
+        logits, stoch, deter = transition_model.para_predict_flat(act, stoch, deter)
         if t == 0:
-            traj_states, logits, stoch_state, deter_state = transition_model.para_predict(action, traj_states) # len: n_trajs; shape: (B, n_ags, _dim)
-            first_pred = traj_states 
-        else:
-            traj_states = transition_model.para_predict(action, traj_states)[0] # len: n_trajs; shape: (B, n_ags, _dim)
-        feat = torch.stack([state.get_features() for state in traj_states])
-        feat = feat.reshape(-1, n_agents, feat.shape[-1]) # (n_trajs, B, n_ags, _dim)
-        loss = m_r_predictor(feat).reshape(-1, batch_size, n_agents, 1) # (n_trajs, B, n_ags, 1)
+            first = (logits, stoch, deter)
+        feat = torch.cat([stoch, deter], -1)                                   # (K*B, n_agents, FEAT)
+        loss = m_r_predictor(feat).reshape(K, batch_size, n_agents, 1)
         if config.discount_MPC:
-            loss *= config.MPCgamma**t
-        traj_losses += loss.mean(dim=(1, 2, 3)).cpu().numpy()
-        action, pi = policy(feat)
+            loss = loss * config.MPCgamma ** t
+        traj_losses = traj_losses + loss.mean(dim=(1, 2, 3))                  # stays on device
+        act, pi = policy(feat)
         if av_action is not None:
             avail_actions = av_action(feat).sample()
-            pi[avail_actions == 0] = -1e10
+            pi = pi.masked_fill(avail_actions == 0, -1e10)
             if config.DeterPolForMo:
-                action = onehot.transform(pi.argmax(dim=-1, keepdim=True)).reshape(config.n_trajs, batch_size, n_agents, action.shape[-1])
+                act = OneHot(out_dim=pi.shape[-1]).transform(pi.argmax(dim=-1, keepdim=True))
             else:
-                action_dist = OneHotCategorical(logits=pi)
-                action = action_dist.sample().squeeze(0).reshape(config.n_trajs, batch_size, n_agents, action.shape[-1])
+                act = OneHotCategorical(logits=pi).sample()
 
-    best_traj = traj_losses.argmin() 
-    # if config.use_wandb:
-    #     wandb.log({'m_r_loss': traj_losses.min()})
-    # idx = [[best_traj[i], i] for i in range(batch_size)]
-    # best_logits, best_stoch_state, best_deter_state = logits.mean(0), stoch_state.mean(0), deter_state.mean(0) # (B, n_ags, _dim)
-    # for d in range(batch_size):
-    #     best_logits[d] = logits[best_traj[d].astype(np.long), d]
-    next_state = first_pred[best_traj]
-    # next_state = RSSMState(logits=best_logits, stoch=best_stoch_state, deter=best_deter_state)
-    return next_state, traj_losses.min(), np.random.choice(traj_losses, 1)[0]
+    best = traj_losses.argmin()                                                 # 0-d index tensor, no .item()
+    sel = lambda x: x.reshape(K, batch_size, n_agents, -1)[best]
+    return RSSMState(logits=sel(first[0]), stoch=sel(first[1]), deter=sel(first[2]))
 
 
 class Transform:
