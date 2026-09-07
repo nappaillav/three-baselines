@@ -6,6 +6,36 @@ import socket
 import setproctitle
 import wandb
 
+# --- wandb robustness (see mag_profile/IMPLEMENTATION_REPORT.md, "wandb service crash") ---
+def _wandb_settings_no_stats():
+    """Disable wandb's system-metrics monitor: its GPU sampler crashed the wandb 0.16 service on MIG slices
+    (Fatal Python error: none_dealloc) and took the trainer down with it. Training metrics are unaffected.
+    Field is `_disable_stats` in wandb <= 0.17 and `x_disable_stats` in newer releases."""
+    Settings = getattr(wandb, "Settings", None)
+    if Settings is None:
+        return None
+    for kw in ("x_disable_stats", "_disable_stats"):
+        try:
+            return Settings(**{kw: True})
+        except Exception:
+            continue
+    return None
+
+
+def _make_wandb_log_safe():
+    """Never let a dead wandb service end a run: swallow logging errors (report the first one) and go on."""
+    orig_log, state = wandb.log, {"failed": False}
+
+    def safe_log(*args, **kwargs):
+        try:
+            return orig_log(*args, **kwargs)
+        except Exception as e:  # BrokenPipeError etc. once the service is gone
+            if not state["failed"]:
+                state["failed"] = True
+                print(f"[wandb] logging failed ({type(e).__name__}: {e}); continuing without wandb logging", flush=True)
+    wandb.log = safe_log
+
+
 from agent.runners.DreamerRunner import DreamerRunner
 from configs import Experiment
 from configs.EnvConfigs import StarCraftConfig, EnvCurriculumConfig
@@ -96,6 +126,7 @@ if __name__ == "__main__":
 
     if configs["learner_config"].use_wandb:
         wandb.init(config=configs["learner_config"],
+                    settings=_wandb_settings_no_stats(),
                     project='MAG',
                     # entity='',
                     notes=socket.gethostname(),
@@ -107,6 +138,7 @@ if __name__ == "__main__":
         wandb.define_metric('total_step')
         wandb.define_metric('incre_win_rate', step_metric='total_step')
         wandb.define_metric('aver_step_reward', step_metric='total_step')
+        _make_wandb_log_safe()
         setproctitle.setproctitle(str(RANDOM_SEED) + '_' + args.cuda_num)
 
     exp = Experiment(steps=args.steps,
