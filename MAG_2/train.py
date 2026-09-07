@@ -19,6 +19,7 @@ def parse_args():
     parser.add_argument('--env', type=str, default="flatland", help='Flatland or SMAC env')
     parser.add_argument('--env_name', type=str, default="5_agents", help='Specific setting')
     parser.add_argument('--n_workers', type=int, default=2, help='Number of workers')
+    parser.add_argument('--steps', type=int, default=2_000_000, help='Environment-step budget (DECISIONS.md: 2M)')
     return parser.parse_args()
 
 
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         wandb.define_metric('aver_step_reward', step_metric='total_step')
         setproctitle.setproctitle(str(RANDOM_SEED) + '_' + args.cuda_num)
 
-    exp = Experiment(steps=int(1e6),
+    exp = Experiment(steps=args.steps,
                      episodes=50000,
                      random_seed=RANDOM_SEED,
                      env_config=EnvCurriculumConfig(*zip(configs["env_config"]), Env(args.env),
