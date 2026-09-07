@@ -6,7 +6,9 @@ from agent.workers.DreamerWorker import DreamerWorker
 
 class DreamerServer:
     def __init__(self, n_workers, env_config, controller_config, model):
-        ray.init()
+        # step E: bound ray to the workers' cores and a small object store (default sizes it from the node's RAM,
+        # which can exceed the job's cgroup memory limit); no dashboard on compute nodes.
+        ray.init(num_cpus=n_workers, object_store_memory=512 * 1024 ** 2, include_dashboard=False)
 
         self.workers = [DreamerWorker.remote(i, env_config, controller_config) for i in range(n_workers)]
         self.tasks = [worker.run.remote(model) for worker in self.workers]
