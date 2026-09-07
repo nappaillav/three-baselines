@@ -94,6 +94,9 @@ if __name__ == "__main__":
     RANDOM_SEED = 23
     #set_all_seeds(100)
     args = parse_args()
+    torch.set_num_threads(2)   # step E (DECISIONS.md): fixed at 2 — the learner is latency-bound
+    if "SC2PATH" not in os.environ:   # step E: MABL never set SC2PATH; the job script must export it
+        raise EnvironmentError("SC2PATH is not set. Export SC2PATH=<path to StarCraftII> before running train.py.")
     if args.env == Env.FLATLAND:
         configs = prepare_flatland_configs(args.env_name)
     elif args.env == Env.STARCRAFT:
