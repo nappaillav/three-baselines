@@ -97,3 +97,26 @@ TOTAL learner.step = 61.1s          (baseline shipped: ~419 s per cycle, one cyc
 4 PPO: 60 minibatches (11,520 rows / 1000 x 5 epochs)   8.2
 ```
 Per env step on CPU: 419/70 = 6.0 s -> 61/500 = 0.12 s (~50x). GPU figures: gate F2.
+
+### Step E — driver / ray / job scripts
+`train.py`: `torch.set_num_threads(2)`; `SC2PATH` must come from the environment (raises a clear
+`EnvironmentError` otherwise; the hardcoded per-user path is gone). `agent/runners/DreamerRunner.py`:
+`ray.init(num_cpus=n_workers, object_store_memory=512 MB, include_dashboard=False)`.
+Job scripts in `mag_profile/`: `cc_mag_rorqual.sh` (H100 3g.40gb, 8 cores, 4 workers, 14 h),
+`cc_mag_narval.sh` (A100 3g.20gb, 8 cores, 4 workers; paths/venv for the colleague's checkout, MIG gres
+name to be confirmed with `sinfo`), `cc_mag_profile_gpu.sh` (gate F2: per-phase time + peak memory for
+MAG, MAG_2, MABL and the shipped-vs-decided MAG comparison, 30 min).
+`sbatch --test-only` (validates, submits nothing): both Rorqual scripts accepted.
+
+### End-to-end smoke run (gate F1 for the whole chain)
+`train.py --env=starcraft --env_name=3m --n_workers=1`, CPU, 16 episodes, no repo edits (a wrapper
+monkeypatched `Experiment.episodes`, `DEVICE='cpu'` and the thread count):
+```
+Started a local Ray instance.
+[smoke] train_agent done in 35.4s; model losses this cycle: first=13.340 last=7.953 all_finite=True
+[smoke] finished 16 episodes in 85s      exit 0
+```
+One learner cycle fired once 500 transitions had accumulated (N_SAMPLES), ran 20 model epochs, the
+predictor updates, the batched imagination rollout and PPO, and the workers resumed. No NaN/Inf.
+
+Not run locally (needs a GPU job, user submits): gate F2. Not run (needs hours): F3-F5.
