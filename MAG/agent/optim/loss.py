@@ -117,7 +117,7 @@ def calculate_next_reward(model, actions, states):
 
 def actor_loss(imag_states, actions, av_actions, old_policy, advantage, actor, ent_weight, config):
     if config.obs_as_pol_in:
-        imag_states = imag_states.reshape(config.n_elites, config.HORIZON-1, config.BATCH_SIZE, actions.shape[1], imag_states.shape[-1])
+        imag_states = imag_states.reshape(config.n_elites, config.HORIZON-1, -1, actions.shape[1], imag_states.shape[-1])
         imag_states = imag_states.transpose(1, 0).reshape(config.n_elites*(config.HORIZON-1), -1, imag_states.shape[-1])
     _, new_policy = actor(imag_states)
     if av_actions is not None:

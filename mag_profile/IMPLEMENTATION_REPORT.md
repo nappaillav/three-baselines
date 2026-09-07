@@ -69,3 +69,15 @@ STEP B EXACTNESS: PASS
 Profiler after B on CPU: MPCPredict 3.65 -> 3.92 s/call, i.e. **no change on CPU** (within noise). This
 is expected: the removed costs are host<->device syncs and launch gaps, which only exist on a GPU. The
 GPU effect is measured by gate F2 (job script below).
+
+### Step C — one batched imagination rollout per cycle
+Changes: `DreamerLearner.step` samples `EPOCHS * BATCH_SIZE` (=160) sequences once and calls
+`train_agent` once (was `EPOCHS` sequential rollouts of 40); PPO minibatch size is now
+`config.PPO_MINIBATCH` (new, 1000; was the literal 2000); `actor_loss`'s unused `obs_as_pol_in` reshape
+no longer hardcodes `BATCH_SIZE`. `EPOCHS` keeps its name as the batch multiplier.
+
+Profiler after C (shipped config, MODEL 10, EPOCHS 4): `actor_rollout` called **once** on 160 sequences
+(imagined states (15, 2880, 3, 1024)); 205 PPO minibatches of <=1000 rows (40,320 rows / 1000 x 5 PPO
+epochs). On CPU the single wide rollout costs 246 s = ~4 x the 62 s single-batch rollout, i.e. no CPU
+saving — CPU is compute-bound. The saving (4x fewer sequential latency-bound passes) is a GPU effect;
+gate F2 measures it.
