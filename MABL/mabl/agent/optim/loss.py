@@ -102,16 +102,24 @@ def actor_rollout(obs, global_state, action, last, model, actor, critic, config)
     return [batch_multi_agent(v, n_agents) for v in output]
 
 def critic_rollout(model, critic, agent_states, global_states, rew_states, actions, agent_raw_states, global_raw_states, config):
+    # Item 1 (mag_profile/DECISIONS.md): evaluated one imagination step at a time. The whole-batch
+    # version ran the transition model, critic and continuation head over horizon x batch x n_agents
+    # states in one call, and those intermediates are the peak of the actor phase (~34 GB at 27 agents,
+    # CUDA OOM on a 40 GB A100). Same math; only the order of the transition model's random draws changes.
+    horizon, batch = actions.shape[0], actions.shape[1]
     with FreezeParameters([model, critic]):
-        imag_reward = calculate_next_reward(model, actions, agent_raw_states, global_raw_states) #TODO
-        imag_reward = imag_reward.reshape(actions.shape[:-1]).unsqueeze(-1).mean(-2, keepdim=True)[:-1]
-        value = critic(agent_states, global_states, actions) 
-        discount_arr = model.pcont(rew_states).mean
-        #wandb.log({'Value/Max reward': imag_reward.max(), 'Value/Min reward': imag_reward.min(),
-        #           'Value/Reward': imag_reward.mean(), 'Value/Discount': discount_arr.mean(),
-        #           'Value/Value': value.mean()})
+        rewards, values = [], []
+        for t in range(horizon):
+            step = slice(t * batch, (t + 1) * batch)
+            rewards.append(calculate_next_reward(model, actions[t],
+                                                 agent_raw_states.map(lambda x, s=step: x[s]),
+                                                 global_raw_states.map(lambda x, s=step: x[s])))
+            values.append(critic(agent_states[t], global_states[t], actions[t]))
+        imag_reward = torch.stack(rewards, dim=0).mean(-2, keepdim=True)[:-1]
+        value = torch.stack(values, dim=0)
+        discount_arr = torch.stack([model.pcont(rew_states[t]).mean for t in range(rew_states.shape[0])], dim=0)
     returns = compute_return(imag_reward, value[:-1], discount_arr, bootstrap=value[-1], lmbda=config.DISCOUNT_LAMBDA,
-                             gamma=config.GAMMA) 
+                             gamma=config.GAMMA)
     return returns
 
 

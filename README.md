@@ -48,6 +48,16 @@ from `use_MPCmodel=False`); the MPC/predictor paths are inactive there.
 **MABL**: no predictor and no MPC, so only `masked_fill`, the batched imagination rollout, the
 hyperparameters above and the driver changes apply.
 
+**Chunked critic rollout — all three repos (exact).** `critic_rollout` in `agent/optim/loss.py` now
+evaluates the transition model, critic and continuation head one imagination step at a time instead of
+over `horizon x batch x n_agents` states in a single call. Those intermediates were the peak of the
+actor phase and made MABL on `27m_vs_30m` fail with `torch.OutOfMemoryError` on a full 40 GB A100.
+Measured at 27 agents, peak memory falls from 0.240 to 0.172 GB per imagination sequence, about 32 GB
+to 23 GB at the configured batch; on a 3-agent map, 3.37 GB to 2.89 GB, for 2-5% more time in that
+function. The maths is unchanged (verified to 2e-6 against the old code with sampling made
+deterministic), but the order of the transition model's random draws differs, so runs are not
+bit-reproducible against ones started before this change.
+
 **Driver and job plumbing — all three repos** (`train.py`, `agent/runners/DreamerRunner.py`):
 - torch threads fixed at 2 in the driver (the learner is latency-bound; more threads only steal cores
   from the workers); `OMP_NUM_THREADS=1` is set for the ray workers by the job scripts.
@@ -146,8 +156,10 @@ is environment-bound (one StarCraft II process, one worker); on the five maps ov
 - **If a run stops early with no error in the `.out` file**, look at the `.err` file: a wandb service
   crash shows up there as `Fatal Python error` followed by `BrokenPipeError` in `wandb.log`. The
   hardening above prevents this; runs started before it must be relaunched with the updated code.
-- **27m_vs_30m** (27 agents) needs ~13 GB for the world-model phase alone at `MODEL_BATCH_SIZE=120`;
-  run it with `MODEL_BATCH_SIZE=40, MODEL_EPOCHS=60` or on a full GPU.
+- **27m_vs_30m** (27 agents) is the one map that does not fit a 3g slice. With the chunked critic
+  rollout its actor phase needs ~23 GB and its world-model phase ~13 GB at `MODEL_BATCH_SIZE=120`, so it
+  runs on a **full 40 GB A100/H100**. To fit a 20 GB slice it would also need the imagination batch sized
+  by agent count (not implemented) plus `MODEL_BATCH_SIZE=40, MODEL_EPOCHS=60`.
 - Seeds: MAG and MAMBA draw a random seed per run (`train.py`); MABL fixes `RANDOM_SEED = 23` — edit
   it for multi-seed studies.
 - MABL is single-process; `--n_workers` is accepted but inert, so 4 cores are enough for it.

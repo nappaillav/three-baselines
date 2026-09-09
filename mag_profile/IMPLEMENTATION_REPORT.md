@@ -207,3 +207,65 @@ sbatch cc_mag_rorqual.sh 3s_vs_4z /scratch/zwang182/three-baselines-valliappan/M
 ```
 On Narval use `cc_mag_narval.sh` after setting its REPO/VENV/SC2PATH lines and confirming the MIG gres
 name (`sinfo -o "%G" | sort -u`). Both Rorqual scripts passed `sbatch --test-only`.
+
+---
+
+## Item 1 — chunked `critic_rollout` (2026-09-09), all three repos
+
+Motivation: MABL on `27m_vs_30m` died with `torch.OutOfMemoryError` on a **full 40 GB A100** (32.07 GB
+allocated by PyTorch + 5.84 GB reserved-unallocated, failing on a further 1.48 GiB) inside
+`critic_rollout -> calculate_next_reward -> model.transition`. The whole-batch call evaluated the
+transition model, critic and continuation head over `horizon x batch x n_agents` = 5 x 3040 x 27 =
+410k states at once.
+
+**Change** (`agent/optim/loss.py::critic_rollout` in MAG, MAG_2, MABL): loop over the imagination-step
+dimension, one step per iteration, stacking the per-step reward, value and discount (all small) and
+feeding the same `compute_return`. The flattened raw states are sliced `[t*batch : (t+1)*batch]`, which
+is exactly how they were flattened. No other function touched; `MAG/agent/optim/loss.py` and
+`MAG_2/agent/optim/loss.py` remain byte-identical to each other.
+
+**Exactness** (`mag_profile/tests/test_item1.py`, re-runnable): at the call site, both the new and a
+verbatim copy of the pre-change implementation are run on the same arguments and module state, with
+`OneHotCategorical.sample` patched to a deterministic argmax one-hot so the transition model's latent
+draws are identical.
+
+| repo | map | MPC | returns shape | max abs diff | verdict |
+|---|---|---|---|---|---|
+| MAG | 3m | on | (4, 720, 3, 1) | 1.9e-06 | MATCH |
+| MAG_2 | 3m | off | (4, 720, 3, 1) | 1.9e-06 | MATCH |
+| MABL | 3m | n/a | (4, 720, 3, 1) | 4.8e-07 | MATCH |
+| MABL | 27m_vs_30m | n/a | (4, 180, 27, 1) | 6.0e-08 | MATCH |
+| MAG | 27m_vs_30m | on | (4, 180, 27, 1) | 2.4e-07 | MATCH |
+
+Differences are float32 reduction-order noise. **With real sampling the two are not bit-identical**:
+chunking changes the order of the transition model's random draws, so results are distributionally
+identical but old runs cannot be reproduced bitwise.
+
+**Memory** (peak process RSS, MABL, `27m_vs_30m`, CPU; `MODE=ref` is the pre-change code):
+
+| imagination sequences | pre-change | chunked |
+|---|---|---|
+| 10 | 3.73 GB | 2.84 GB |
+| 20 | 6.13 GB | 4.56 GB |
+| slope | 0.240 GB/seq | 0.172 GB/seq |
+| at the configured 160 | 38.4 GB | 27.5 GB |
+| calibrated to GPU allocated (/1.2) | ~32 GB | ~23 GB |
+
+A 28% reduction. It is bounded because `critic_rollout` is only about a third of the batch-scaled
+memory; the rest is the imagination storage `rollout_policy` builds before `critic_rollout` is called
+(measured floor with `critic_rollout` deleted: 0.161 GB/seq). **Consequence: `27m_vs_30m` now fits a
+full 40 GB GPU with headroom but still not a 20 GB slice** — that needs item 2 (imagination batch sized
+by agent count), which is not implemented.
+
+**Cost**: on a 3-agent map at the configured 160 sequences, `critic_rollout` goes 3.40 s -> 3.57 s and
+4.03 s -> 4.09 s across two repeats (+2 to +5%, ~0.1-0.2 s per learner cycle) while peak memory falls
+3.37 GB -> 2.89 GB; at 27 agents it is marginally *faster* (4.80 s -> 4.68 s). Whole-step times vary
+32-42 s between repeats of identical code on the login node, so only the per-phase numbers are meaningful.
+
+**End-to-end smoke runs** (map `3m`, CPU, one full learner cycle each, exit 0):
+
+| repo | episodes | model loss first -> last | finite |
+|---|---|---|---|
+| MAG | 20 | 13.609 -> 8.201 | yes |
+| MAG_2 | 30 | 13.992 -> 8.364 | yes |
+| MABL | 30 | 13.102 -> 8.960 | yes |
